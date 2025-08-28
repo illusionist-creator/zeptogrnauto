@@ -66,104 +66,83 @@ class ZeptoAutomation:
         self.sheets_scopes = ['https://www.googleapis.com/auth/spreadsheets']
     
     def authenticate_from_secrets(self, progress_bar, status_text):
-        """Authenticate using credentials file or Streamlit secrets"""
+        """Authenticate using Streamlit secrets with web-based OAuth flow"""
         try:
             status_text.text("Authenticating with Google APIs...")
             progress_bar.progress(10)
             
-            # OAuth2 authentication for all services
-            combined_scopes = list(set(self.gmail_scopes + self.drive_scopes + self.sheets_scopes))
+            # Check for existing token in session state
+            if 'oauth_token' in st.session_state:
+                try:
+                    combined_scopes = list(set(self.gmail_scopes + self.drive_scopes + self.sheets_scopes))
+                    creds = Credentials.from_authorized_user_info(st.session_state.oauth_token, combined_scopes)
+                    if creds and creds.valid:
+                        progress_bar.progress(50)
+                        # Build services
+                        self.gmail_service = build('gmail', 'v1', credentials=creds)
+                        self.drive_service = build('drive', 'v3', credentials=creds)
+                        self.sheets_service = build('sheets', 'v4', credentials=creds)
+                        progress_bar.progress(100)
+                        status_text.text("Authentication successful!")
+                        return True
+                except Exception as e:
+                    st.info(f"Cached token invalid, requesting new authentication: {str(e)}")
             
-            # Check if running locally or in production
-            if os.path.exists('credentials.json'):
-                # Local development - use file directly with InstalledAppFlow
-                creds = self._oauth2_authenticate_from_file('credentials.json', combined_scopes)
+            # Use Streamlit secrets for OAuth
+            if "google" in st.secrets and "credentials_json" in st.secrets["google"]:
+                creds_data = json.loads(st.secrets["google"]["credentials_json"])
+                combined_scopes = list(set(self.gmail_scopes + self.drive_scopes + self.sheets_scopes))
+                
+                # Configure for web application
+                from google_auth_oauthlib.flow import Flow
+                flow = Flow.from_client_config(
+                    client_config=creds_data,
+                    scopes=combined_scopes,
+                    redirect_uri="https://your-app-name.streamlit.app/"  # Update this with your actual URL
+                )
+                
+                # Generate authorization URL
+                auth_url, _ = flow.authorization_url(prompt='consent')
+                
+                # Check for callback code
+                query_params = st.query_params
+                if "code" in query_params:
+                    try:
+                        code = query_params["code"]
+                        flow.fetch_token(code=code)
+                        creds = flow.credentials
+                        
+                        # Save credentials in session state
+                        st.session_state.oauth_token = json.loads(creds.to_json())
+                        
+                        progress_bar.progress(50)
+                        # Build services
+                        self.gmail_service = build('gmail', 'v1', credentials=creds)
+                        self.drive_service = build('drive', 'v3', credentials=creds)
+                        self.sheets_service = build('sheets', 'v4', credentials=creds)
+                        
+                        progress_bar.progress(100)
+                        status_text.text("Authentication successful!")
+                        
+                        # Clear the code from URL
+                        st.query_params.clear()
+                        return True
+                    except Exception as e:
+                        st.error(f"Authentication failed: {str(e)}")
+                        return False
+                else:
+                    # Show authorization link
+                    st.markdown("### Google Authentication Required")
+                    st.markdown(f"[Authorize with Google]({auth_url})")
+                    st.info("Click the link above to authorize, you'll be redirected back automatically")
+                    st.stop()
             else:
-                # Production - use Streamlit secrets
-                creds_data = dict(st.secrets["google_credentials"])
-                creds = self._oauth2_authenticate_from_dict(creds_data, combined_scopes)
-            
-            progress_bar.progress(50)
-            
-            # Build services
-            self.gmail_service = build('gmail', 'v1', credentials=creds)
-            self.drive_service = build('drive', 'v3', credentials=creds)
-            self.sheets_service = build('sheets', 'v4', credentials=creds)
-            
-            progress_bar.progress(100)
-            status_text.text("Authentication successful!")
-            return True
-            
+                st.error("Google credentials missing in Streamlit secrets")
+                return False
+                
         except Exception as e:
             st.error(f"Authentication failed: {str(e)}")
             return False
-    
-    def _oauth2_authenticate_from_file(self, credentials_path: str, scopes: List[str]) -> Credentials:
-        """Handle OAuth2 authentication from credentials.json file"""
-        creds = None
-        token_file = 'token_combined.json'
-        
-        # Check for existing token in session state or file
-        if 'oauth_token' in st.session_state:
-            try:
-                creds = Credentials.from_authorized_user_info(st.session_state.oauth_token, scopes)
-            except:
-                creds = None
-        elif os.path.exists(token_file):
-            try:
-                creds = Credentials.from_authorized_user_file(token_file, scopes)
-            except:
-                creds = None
-        
-        # If no valid credentials, run OAuth flow
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                except:
-                    creds = None
-            
-            if not creds:
-                # Use the credentials file directly with InstalledAppFlow
-                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, scopes)
-                creds = flow.run_local_server(port=0)
-            
-            # Save credentials to session state and file
-            st.session_state.oauth_token = json.loads(creds.to_json())
-            with open(token_file, 'w') as token:
-                token.write(creds.to_json())
-        
-        return creds
-    
-    def _oauth2_authenticate_from_dict(self, creds_data: dict, scopes: List[str]) -> Credentials:
-        """Handle OAuth2 authentication from credentials dictionary (for production)"""
-        creds = None
-        
-        # Check for existing token in session state
-        if 'oauth_token' in st.session_state:
-            try:
-                creds = Credentials.from_authorized_user_info(st.session_state.oauth_token, scopes)
-            except:
-                creds = None
-        
-        # If no valid credentials, run OAuth flow
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                except:
-                    creds = None
-            
-            if not creds:
-                # Create flow from credentials data
-                flow = InstalledAppFlow.from_client_config(
-                    {"installed": creds_data}, scopes)
-                creds = flow.run_local_server(port=0)
-            
-            # Save credentials to session state
-            st.session_state.oauth_token = json.loads(creds.to_json())
-        
-        return creds
     
     def search_emails(self, sender: str = "", search_term: str = "", 
                      days_back: int = 7, max_results: int = 50) -> List[Dict]:

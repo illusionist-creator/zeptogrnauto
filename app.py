@@ -358,108 +358,62 @@ class ZeptoAutomation:
                 
                 file_data = base64.urlsafe_b64decode(att["data"].encode("UTF-8"))
                 
-                # Create nested folder structure: Gmail_Attachments -> sender -> search_term -> file_type
-                sender_email = sender
-                if "<" in sender_email and ">" in sender_email:
-                    sender_email = sender_email.split("<")[1].split(">")[0].strip()
-                sender_folder_name = self._sanitize_filename(sender_email)
-                search_term = config.get('search_term', 'all-attachments')
-                search_folder_name = search_term if search_term else "all-attachments"
-                file_type_folder = self._classify_extension(filename)
+                # Create folder structure: Gmail_Attachments -> Sender -> Date
+                sender_folder_id = self._create_drive_folder(sender, base_folder_id)
                 
-                # Create sender folder
-                sender_folder_id = self._create_drive_folder(sender_folder_name, base_folder_id)
+                date_folder_name = datetime.now().strftime("%Y-%m-%d")
+                date_folder_id = self._create_drive_folder(date_folder_name, sender_folder_id)
                 
-                # Create search term folder
-                search_folder_id = self._create_drive_folder(search_folder_name, sender_folder_id)
+                # Upload file
+                file_metadata = {
+                    'name': filename,
+                    'parents': [date_folder_id]
+                }
                 
-                # Create file type folder within search folder
-                type_folder_id = self._create_drive_folder(file_type_folder, search_folder_id)
+                media = MediaIoBaseUpload(io.BytesIO(file_data), mimetype='application/octet-stream')
                 
-                # Clean filename and make it unique
-                clean_filename = self._sanitize_filename(filename)
-                final_filename = f"{message_id}_{clean_filename}"
+                file = self.drive_service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields='id'
+                ).execute()
                 
-                # Check if file already exists
-                if not self._file_exists_in_folder(final_filename, type_folder_id):
-                    # Upload to Drive
-                    file_metadata = {
-                        'name': final_filename,
-                        'parents': [type_folder_id]
-                    }
-                    
-                    media = MediaIoBaseUpload(
-                        io.BytesIO(file_data),
-                        mimetype='application/octet-stream',
-                        resumable=True
-                    )
-                    
-                    self.drive_service.files().create(
-                        body=file_metadata,
-                        media_body=media,
-                        fields='id'
-                    ).execute()
-                    
-                    st.info(f"Uploaded: {final_filename}")
-                    processed_count = 1
-                else:
-                    st.info(f"File already exists, skipping: {final_filename}")
+                st.success(f"Uploaded {filename} to Drive folder {date_folder_name}")
+                processed_count += 1
                 
             except Exception as e:
                 st.error(f"Failed to process attachment {filename}: {str(e)}")
         
         return processed_count
     
-    def _sanitize_filename(self, filename: str) -> str:
-        """Clean up filenames to be safe for all operating systems"""
-        import re
-        cleaned = re.sub(r'[<>:"/\\|?*]', '_', filename)
-        if len(cleaned) > 100:
-            name_parts = cleaned.split('.')
-            if len(name_parts) > 1:
-                extension = name_parts[-1]
-                base_name = '.'.join(name_parts[:-1])
-                cleaned = f"{base_name[:95]}.{extension}"
-            else:
-                cleaned = cleaned[:100]
-        return cleaned
-    
-    def _classify_extension(self, filename: str) -> str:
-        """Categorize file by extension"""
-        if not filename or '.' not in filename:
-            return "Other"
-            
-        ext = filename.split(".")[-1].lower()
-        
-        type_map = {
-            "pdf": "PDFs",
-            "doc": "Documents", "docx": "Documents", "txt": "Documents",
-            "xls": "Spreadsheets", "xlsx": "Spreadsheets", "csv": "Spreadsheets",
-            "jpg": "Images", "jpeg": "Images", "png": "Images", "gif": "Images",
-            "ppt": "Presentations", "pptx": "Presentations",
-            "zip": "Archives", "rar": "Archives", "7z": "Archives",
-        }
-        
-        return type_map.get(ext, "Other")
-    
-    def _file_exists_in_folder(self, filename: str, folder_id: str) -> bool:
-        """Check if file already exists in folder"""
-        try:
-            query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
-            existing = self.drive_service.files().list(q=query, fields='files(id, name)').execute()
-            files = existing.get('files', [])
-            return len(files) > 0
-        except:
-            return False
-    
-    def process_pdf_workflow(self, config: dict, progress_bar, status_text, log_container):
+    def process_pdf_workflow(self, config: dict, progress_bar, status_text, log_container, skip_existing=False, max_files=None):
         """Process PDF workflow with LlamaParse"""
+        if not LLAMA_AVAILABLE:
+            st.error("LlamaParse not available. Please install with: pip install llama-cloud-services")
+            return {'success': False, 'processed': 0}
+        
         try:
-            if not LLAMA_AVAILABLE:
-                st.error("LlamaParse not available. Install with: pip install llama-cloud-services")
-                return {'success': False, 'processed': 0}
+            status_text.text("Starting PDF workflow...")
             
-            status_text.text("Starting PDF processing workflow...")
+            # List PDFs
+            pdf_files = self._list_drive_files(config['drive_folder_id'], config['days_back'])
+            
+            if skip_existing:
+                existing_ids = self.get_existing_drive_ids(config['spreadsheet_id'], config['sheet_range'])
+                pdf_files = [f for f in pdf_files if f['id'] not in existing_ids]
+                st.info(f"After filtering existing, {len(pdf_files)} PDFs to process")
+            
+            if max_files is not None:
+                pdf_files = pdf_files[:max_files]
+                st.info(f"Limited to {max_files} PDFs")
+            
+            progress_bar.progress(25)
+            
+            if not pdf_files:
+                st.warning("No PDF files found in folder")
+                return {'success': True, 'processed': 0}
+            
+            status_text.text(f"Found {len(pdf_files)} PDFs. Processing...")
             
             # Setup LlamaParse
             os.environ["LLAMA_CLOUD_API_KEY"] = config['llama_api_key']
@@ -467,72 +421,51 @@ class ZeptoAutomation:
             agent = extractor.get_agent(name=config['llama_agent'])
             
             if agent is None:
-                st.error(f"Could not find agent '{config['llama_agent']}'. Check dashboard.")
+                st.error(f"Could not find LlamaParse agent '{config['llama_agent']}'")
                 return {'success': False, 'processed': 0}
             
-            progress_bar.progress(10)
-            
-            # Get PDF files from Drive
-            pdf_files = self._list_drive_files(config['drive_folder_id'], config.get('days_back', None))
-            
-            progress_bar.progress(30)
-            
-            if not pdf_files:
-                st.warning("No PDF files found in the specified folder")
-                return {'success': True, 'processed': 0}
-            
-            status_text.text(f"Found {len(pdf_files)} PDF files. Processing...")
-            st.info(f"Found {len(pdf_files)} PDF files to process")
-            
             processed_count = 0
-            all_rows = []
+            rows_added = 0
             
-            for i, file_info in enumerate(pdf_files):
+            for i, file in enumerate(pdf_files):
                 try:
-                    status_text.text(f"Processing PDF {i+1}/{len(pdf_files)}: {file_info['name']}")
+                    status_text.text(f"Processing PDF {i+1}/{len(pdf_files)}: {file['name']}")
                     
                     # Download PDF
-                    pdf_data = self._download_from_drive(file_info['id'])
-                    
+                    pdf_data = self._download_from_drive(file['id'])
                     if not pdf_data:
-                        st.warning(f"Failed to download PDF: {file_info['name']}")
+                        st.warning(f"Failed to download {file['name']}")
                         continue
                     
-                    # Save to temporary file
                     with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
                         temp_file.write(pdf_data)
                         temp_path = temp_file.name
                     
-                    # Extract data
-                    result = agent.extract(temp_path)
+                    # Extract with LlamaParse
+                    result = self._safe_extract(agent, temp_path)
                     extracted_data = result.data
                     
-                    # Clean up temp file
                     os.unlink(temp_path)
                     
                     # Process extracted data
-                    rows = self._process_extracted_data(extracted_data, file_info)
-                    all_rows.extend(rows)
+                    rows = self._process_extracted_data(extracted_data, file)
                     
-                    processed_count += 1
-                    st.success(f"Processed: {file_info['name']} - Extracted {len(rows)} rows")
+                    if rows:
+                        self._save_to_sheets(config['spreadsheet_id'], config['sheet_range'], rows)
+                        rows_added += len(rows)
+                        processed_count += 1
+                        st.success(f"Processed {file['name']} - added {len(rows)} rows")
+                    else:
+                        st.info(f"No data extracted from {file['name']}")
                     
-                    progress = 30 + (i + 1) / len(pdf_files) * 60
+                    progress = 25 + (i + 1) / len(pdf_files) * 75
                     progress_bar.progress(int(progress))
                     
                 except Exception as e:
-                    st.error(f"Failed to process PDF {file_info.get('name', 'unknown')}: {str(e)}")
-            
-            # Save all rows to sheets at once
-            if all_rows:
-                self._save_to_sheets(
-                    config['spreadsheet_id'],
-                    config['sheet_range'],
-                    all_rows
-                )
+                    st.error(f"Failed to process {file['name']}: {str(e)}")
             
             progress_bar.progress(100)
-            status_text.text(f"PDF workflow completed! Processed {processed_count} PDFs with {len(all_rows)} rows")
+            status_text.text(f"PDF workflow completed! Processed {processed_count} PDFs, added {rows_added} rows")
             
             return {'success': True, 'processed': processed_count}
             
@@ -540,14 +473,40 @@ class ZeptoAutomation:
             st.error(f"PDF workflow failed: {str(e)}")
             return {'success': False, 'processed': 0}
     
-    def _list_drive_files(self, folder_id: str, days_back: Optional[int] = None) -> List[Dict]:
-        """List all PDF files in a Google Drive folder, optionally filtered by days back"""
+    def get_existing_drive_ids(self, spreadsheet_id: str, sheet_range: str) -> set:
+        """Get set of existing drive_file_id from Google Sheet"""
         try:
-            query = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed=false"
+            result = self.sheets_service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=sheet_range,
+                majorDimension="ROWS"
+            ).execute()
             
-            if days_back:
-                start_date = (datetime.now() - timedelta(days=days_back)).isoformat()
-                query += f" and modifiedTime > '{start_date}'"
+            values = result.get('values', [])
+            if not values:
+                return set()
+            
+            headers = values[0]
+            if "drive_file_id" not in headers:
+                st.warning("No 'drive_file_id' column found in sheet")
+                return set()
+            
+            id_index = headers.index("drive_file_id")
+            existing_ids = {row[id_index] for row in values[1:] if len(row) > id_index and row[id_index]}
+            
+            return existing_ids
+            
+        except Exception as e:
+            st.error(f"Failed to get existing file IDs: {str(e)}")
+            return set()
+    
+    def _list_drive_files(self, folder_id: str, days_back: int = 7) -> List[Dict]:
+        """List PDF files in Drive folder"""
+        try:
+            start_datetime = datetime.utcnow() - timedelta(days=days_back)
+            start_str = start_datetime.strftime('%Y-%m-%dT00:00:00Z')
+            
+            query = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed=false and createdTime > '{start_str}'"
             
             files = []
             page_token = None
@@ -555,47 +514,57 @@ class ZeptoAutomation:
             while True:
                 results = self.drive_service.files().list(
                     q=query,
-                    fields="nextPageToken, files(id, name, createdTime, modifiedTime)",
-                    orderBy="modifiedTime desc",
-                    pageToken=page_token,
-                    pageSize=100
+                    fields="nextPageToken, files(id, name, createdTime)",
+                    pageToken=page_token
                 ).execute()
                 
                 files.extend(results.get('files', []))
-                page_token = results.get('nextPageToken', None)
-                
-                if page_token is None:
+                page_token = results.get('nextPageToken')
+                if not page_token:
                     break
             
-            st.info(f"Found {len(files)} PDF files")
+            st.info(f"Found {len(files)} PDF files in folder")
             return files
             
         except Exception as e:
-            st.error(f"Failed to list files in folder {folder_id}: {str(e)}")
+            st.error(f"Failed to list Drive files: {str(e)}")
             return []
     
     def _download_from_drive(self, file_id: str) -> bytes:
-        """Download a file from Google Drive"""
+        """Download file from Drive"""
         try:
             request = self.drive_service.files().get_media(fileId=file_id)
-            return request.execute()
+            file_data = request.execute()
+            return file_data
         except Exception as e:
             st.error(f"Failed to download file {file_id}: {str(e)}")
             return b""
     
+    def _safe_extract(self, agent, file_path: str, retries: int = 3, wait_time: int = 2):
+        """Retry-safe extraction"""
+        for attempt in range(1, retries + 1):
+            try:
+                return agent.extract(file_path)
+            except Exception as e:
+                if attempt < retries:
+                    st.warning(f"Extraction attempt {attempt} failed: {str(e)} - retrying...")
+                    time.sleep(wait_time)
+                else:
+                    raise e
+    
     def _process_extracted_data(self, extracted_data: Dict, file_info: Dict) -> List[Dict]:
-        """Process extracted data using Zepto logic"""
+        """Process extracted data into rows"""
         rows = []
         items = []
         
         if "items" in extracted_data:
             items = extracted_data["items"]
             for item in items:
-                item["po_number"] = self._get_value(extracted_data, ["po_number", "purchase_order_number", "PO No"])
-                item["vendor_invoice_number"] = self._get_value(extracted_data, ["vendor_invoice_number", "invoice_number", "inv_no", "Invoice No"])
+                item["po_number"] = self._get_value(extracted_data, ["purchase_order_number", "po_number", "PO No"])
+                item["vendor_invoice_number"] = self._get_value(extracted_data, ["supplier_bill_number", "vendor_invoice_number", "invoice_number"])
                 item["supplier"] = self._get_value(extracted_data, ["supplier", "vendor", "Supplier Name"])
-                item["shipping_address"] = self._get_value(extracted_data, ["shipping_address", "receiver_address", "Shipping Address"])
-                item["grn_date"] = self._get_value(extracted_data, ["grn_date", "delivered_on", "GRN Date"])
+                item["shipping_address"] = self._get_value(extracted_data, ["Shipping Address", "receiver_address", "shipping_address"])
+                item["grn_date"] = self._get_value(extracted_data, ["delivered_on", "grn_date"])
                 item["source_file"] = file_info['name']
                 item["processed_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 item["drive_file_id"] = file_info['id']
@@ -741,7 +710,9 @@ def main():
             'llama_agent': "Zepto Agent",
             'spreadsheet_id': "1YgLZfg7g07_koytHmEXEdy_BxU5sje3T1Ugnav0MIGI",
             'sheet_range': "zeptogrn",
-            'days_back': 30
+            'days_back': 30,
+            'max_files': 50,
+            'skip_existing': True
         }
     
     # Configuration section in sidebar
@@ -778,6 +749,8 @@ def main():
         pdf_sheet_id = st.text_input("Spreadsheet ID", value=st.session_state.pdf_config['spreadsheet_id'])
         pdf_sheet_range = st.text_input("Sheet Range", value=st.session_state.pdf_config['sheet_range'])
         pdf_days = st.number_input("PDF Days Back", value=st.session_state.pdf_config['days_back'], min_value=1)
+        pdf_max_files = st.number_input("Max PDFs to Process", value=st.session_state.pdf_config.get('max_files', 50), min_value=1)
+        pdf_skip_existing = st.checkbox("Skip Existing Files", value=st.session_state.pdf_config.get('skip_existing', True))
         
         pdf_submit = st.form_submit_button("Update PDF Settings")
         
@@ -788,7 +761,9 @@ def main():
                 'llama_agent': pdf_agent,
                 'spreadsheet_id': pdf_sheet_id,
                 'sheet_range': pdf_sheet_range,
-                'days_back': pdf_days
+                'days_back': pdf_days,
+                'max_files': pdf_max_files,
+                'skip_existing': pdf_skip_existing
             }
             st.success("PDF settings updated!")
     
@@ -872,7 +847,9 @@ def main():
             
             elif st.session_state.workflow == "pdf":
                 result = automation.process_pdf_workflow(
-                    st.session_state.pdf_config, main_progress, main_status, log_container
+                    st.session_state.pdf_config, main_progress, main_status, log_container,
+                    skip_existing=st.session_state.pdf_config['skip_existing'],
+                    max_files=st.session_state.pdf_config['max_files']
                 )
                 if result['success']:
                     st.success(f"PDF workflow completed! Processed {result['processed']} PDFs")
@@ -897,7 +874,9 @@ def main():
                     # Step 2: PDF processing
                     st.subheader("Step 2: PDF Processing")
                     pdf_result = automation.process_pdf_workflow(
-                        st.session_state.pdf_config, main_progress, main_status, log_container
+                        st.session_state.pdf_config, main_progress, main_status, log_container,
+                        skip_existing=True,
+                        max_files=st.session_state.pdf_config['max_files']
                     )
                     
                     if pdf_result['success']:
@@ -939,7 +918,7 @@ def main():
             display_pdf_config['llama_api_key'] = "*" * len(display_pdf_config['llama_api_key'])
             st.json(display_pdf_config)
         
-        st.info("Select a workflow above to begin automation")
+        st.info("Configure your settings in the sidebar, then select a workflow above to begin automation")
 
 if __name__ == "__main__":
     main()

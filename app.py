@@ -298,99 +298,95 @@ class ZeptoAutomation:
             st.error(f"Failed to get email details for {message_id}: {str(e)}")
             return {'id': message_id, 'sender': 'Unknown', 'subject': 'Unknown', 'date': ''}
     
-        def create_drive_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> str:
-        """Create a folder in Google Drive"""
-        try:
-            # First check if folder already exists
-            query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-            if parent_folder_id:
-                query += f" and '{parent_folder_id}' in parents"
+        def _extract_attachments_from_email(self, message_id: str, payload: Dict, sender: str, config: dict, base_folder_id: str) -> int:
+            """Extract attachments from email with proper folder structure"""
+            processed_count = 0
             
-            existing = self.drive_service.files().list(q=query, fields='files(id, name)').execute()
-            files = existing.get('files', [])
+            if "parts" in payload:
+                for part in payload["parts"]:
+                    processed_count += self._extract_attachments_from_email(
+                        message_id, part, sender, config, base_folder_id
+                    )
+            elif payload.get("filename") and "attachmentId" in payload.get("body", {}):
+                filename = payload.get("filename", "")
+                
+                # Optional attachment filter
+                if config.get('attachment_filter'):
+                    if filename.lower() != config['attachment_filter'].lower():
+                        return 0
+                
+                try:
+                    # Get attachment data
+                    attachment_id = payload["body"].get("attachmentId")
+                    att = self.gmail_service.users().messages().attachments().get(
+                        userId='me', messageId=message_id, id=attachment_id
+                    ).execute()
+                    
+                    file_data = base64.urlsafe_b64decode(att["data"].encode("UTF-8"))
+                    
+                    # Create the exact folder structure: Gmail_Attachments -> procurement@zeptonow.com -> grn -> PDFs
+                    sender_folder_id = self._create_drive_folder("procurement@zeptonow.com", base_folder_id)
+                    grn_folder_id = self._create_drive_folder("grn", sender_folder_id)
+                    pdfs_folder_id = self._create_drive_folder("PDFs", grn_folder_id)
+                    
+                    # Upload file with message ID prefix
+                    prefixed_filename = f"{message_id}_{filename}"
+                    
+                    file_metadata = {
+                        'name': prefixed_filename,
+                        'parents': [pdfs_folder_id]
+                    }
+                    
+                    media = MediaIoBaseUpload(io.BytesIO(file_data), mimetype='application/octet-stream')
+                    
+                    file = self.drive_service.files().create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields='id'
+                    ).execute()
+                    
+                    st.success(f"Uploaded {prefixed_filename} to Drive")
+                    processed_count += 1
+                    
+                except Exception as e:
+                    st.error(f"Failed to process attachment {filename}: {str(e)}")
             
-            if files:
-                # Folder already exists, return its ID
-                folder_id = files[0]['id']
-                self.log(f"[DRIVE] Using existing folder: {folder_name} (ID: {folder_id})")
-                return folder_id
-            
-            # Create new folder
-            folder_metadata = {
-                'name': folder_name,
-                'mimeType': 'application/vnd.google-apps.folder'
-            }
-            
-            if parent_folder_id:
-                folder_metadata['parents'] = [parent_folder_id]
-            
-            folder = self.drive_service.files().create(
-                body=folder_metadata,
-                fields='id'
-            ).execute()
-            
-            folder_id = folder.get('id')
-            self.log(f"[DRIVE] Created Google Drive folder: {folder_name} (ID: {folder_id})")
-            
-            return folder_id
-            
-        except Exception as e:
-            self.log(f"[ERROR] Failed to create folder {folder_name}: {str(e)}")
-            return ""
-    
-    def _extract_attachments_from_email(self, message_id: str, payload: Dict, sender: str, config: dict, base_folder_id: str) -> int:
-        """Extract attachments from email with proper folder structure"""
-        processed_count = 0
-        
-        if "parts" in payload:
-            for part in payload["parts"]:
-                processed_count += self._extract_attachments_from_email(
-                    message_id, part, sender, config, base_folder_id
-                )
-        elif payload.get("filename") and "attachmentId" in payload.get("body", {}):
-            filename = payload.get("filename", "")
-            
-            # Optional attachment filter (not used in Zepto logic, but kept for compatibility)
-            if config.get('attachment_filter'):
-                if filename.lower() != config['attachment_filter'].lower():
-                    return 0
-            
+            return processed_count
+
+        def _create_drive_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> str:
+            """Create a folder in Google Drive or return existing one"""
             try:
-                # Get attachment data
-                attachment_id = payload["body"].get("attachmentId")
-                att = self.gmail_service.users().messages().attachments().get(
-                    userId='me', messageId=message_id, id=attachment_id
-                ).execute()
+                # First check if folder already exists
+                query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                if parent_folder_id:
+                    query += f" and '{parent_folder_id}' in parents"
                 
-                file_data = base64.urlsafe_b64decode(att["data"].encode("UTF-8"))
+                existing = self.drive_service.files().list(q=query, fields='files(id, name)').execute()
+                files = existing.get('files', [])
                 
-                # Create folder structure: Gmail_Attachments -> Sender -> Date
-                sender_folder_id = self._create_drive_folder(sender, base_folder_id)
+                if files:
+                    # Folder already exists, return its ID
+                    return files[0]['id']
                 
-                date_folder_name = datetime.now().strftime("%Y-%m-%d")
-                date_folder_id = self._create_drive_folder(date_folder_name, sender_folder_id)
-                
-                # Upload file
-                file_metadata = {
-                    'name': filename,
-                    'parents': [date_folder_id]
+                # Create new folder
+                folder_metadata = {
+                    'name': folder_name,
+                    'mimeType': 'application/vnd.google-apps.folder'
                 }
                 
-                media = MediaIoBaseUpload(io.BytesIO(file_data), mimetype='application/octet-stream')
+                if parent_folder_id:
+                    folder_metadata['parents'] = [parent_folder_id]
                 
-                file = self.drive_service.files().create(
-                    body=file_metadata,
-                    media_body=media,
+                folder = self.drive_service.files().create(
+                    body=folder_metadata,
                     fields='id'
                 ).execute()
                 
-                st.success(f"Uploaded {filename} to Drive folder {date_folder_name}")
-                processed_count += 1
+                return folder.get('id')
                 
             except Exception as e:
-                st.error(f"Failed to process attachment {filename}: {str(e)}")
-        
-        return processed_count
+                st.error(f"Failed to create folder {folder_name}: {str(e)}")
+                return ""
     
     def process_pdf_workflow(self, config: dict, progress_bar, status_text, log_container, skip_existing=False, max_files=None):
         """Process PDF workflow with LlamaParse"""

@@ -298,45 +298,45 @@ class ZeptoAutomation:
             st.error(f"Failed to get email details for {message_id}: {str(e)}")
             return {'id': message_id, 'sender': 'Unknown', 'subject': 'Unknown', 'date': ''}
     
-        def create_drive_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> str:
-        """Create a folder in Google Drive"""
-        try:
-            # First check if folder already exists
-            query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-            if parent_folder_id:
-                query += f" and '{parent_folder_id}' in parents"
-            
-            existing = self.drive_service.files().list(q=query, fields='files(id, name)').execute()
-            files = existing.get('files', [])
-            
-            if files:
-                # Folder already exists, return its ID
-                folder_id = files[0]['id']
-                self.log(f"[DRIVE] Using existing folder: {folder_name} (ID: {folder_id})")
-                return folder_id
-            
-            # Create new folder
-            folder_metadata = {
-                'name': folder_name,
-                'mimeType': 'application/vnd.google-apps.folder'
-            }
-            
-            if parent_folder_id:
-                folder_metadata['parents'] = [parent_folder_id]
-            
-            folder = self.drive_service.files().create(
-                body=folder_metadata,
-                fields='id'
-            ).execute()
-            
-            folder_id = folder.get('id')
-            self.log(f"[DRIVE] Created Google Drive folder: {folder_name} (ID: {folder_id})")
-            
+    def create_drive_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> str:
+    """Create a folder in Google Drive"""
+    try:
+        # First check if folder already exists
+        query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        if parent_folder_id:
+            query += f" and '{parent_folder_id}' in parents"
+        
+        existing = self.drive_service.files().list(q=query, fields='files(id, name)').execute()
+        files = existing.get('files', [])
+        
+        if files:
+            # Folder already exists, return its ID
+            folder_id = files[0]['id']
+            self.log(f"[DRIVE] Using existing folder: {folder_name} (ID: {folder_id})")
             return folder_id
-            
-        except Exception as e:
-            self.log(f"[ERROR] Failed to create folder {folder_name}: {str(e)}")
-            return ""
+        
+        # Create new folder
+        folder_metadata = {
+            'name': folder_name,
+            'mimeType': 'application/vnd.google-apps.folder'
+        }
+        
+        if parent_folder_id:
+            folder_metadata['parents'] = [parent_folder_id]
+        
+        folder = self.drive_service.files().create(
+            body=folder_metadata,
+            fields='id'
+        ).execute()
+        
+        folder_id = folder.get('id')
+        self.log(f"[DRIVE] Created Google Drive folder: {folder_name} (ID: {folder_id})")
+        
+        return folder_id
+        
+    except Exception as e:
+        self.log(f"[ERROR] Failed to create folder {folder_name}: {str(e)}")
+        return ""
     
     def _extract_attachments_from_email(self, message_id: str, payload: Dict, sender: str, config: dict, base_folder_id: str) -> int:
         """Extract attachments from email with proper folder structure"""

@@ -298,10 +298,10 @@ class ZeptoAutomation:
             st.error(f"Failed to get email details for {message_id}: {str(e)}")
             return {'id': message_id, 'sender': 'Unknown', 'subject': 'Unknown', 'date': ''}
     
-    def _create_drive_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> str:
+        def create_drive_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> str:
         """Create a folder in Google Drive"""
         try:
-            # Check if folder already exists
+            # First check if folder already exists
             query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
             if parent_folder_id:
                 query += f" and '{parent_folder_id}' in parents"
@@ -310,7 +310,10 @@ class ZeptoAutomation:
             files = existing.get('files', [])
             
             if files:
-                return files[0]['id']
+                # Folder already exists, return its ID
+                folder_id = files[0]['id']
+                self.log(f"[DRIVE] Using existing folder: {folder_name} (ID: {folder_id})")
+                return folder_id
             
             # Create new folder
             folder_metadata = {
@@ -326,10 +329,13 @@ class ZeptoAutomation:
                 fields='id'
             ).execute()
             
-            return folder.get('id')
+            folder_id = folder.get('id')
+            self.log(f"[DRIVE] Created Google Drive folder: {folder_name} (ID: {folder_id})")
+            
+            return folder_id
             
         except Exception as e:
-            st.error(f"Failed to create folder {folder_name}: {str(e)}")
+            self.log(f"[ERROR] Failed to create folder {folder_name}: {str(e)}")
             return ""
     
     def _extract_attachments_from_email(self, message_id: str, payload: Dict, sender: str, config: dict, base_folder_id: str) -> int:

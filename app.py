@@ -298,7 +298,7 @@ class ZeptoAutomation:
             st.error(f"Failed to get email details for {message_id}: {str(e)}")
             return {'id': message_id, 'sender': 'Unknown', 'subject': 'Unknown', 'date': ''}
 
-    def _extract_attachments_from_email(self, message_id: str, payload: Dict, sender: str, config: dict, base_folder_id: str) -> int:
+    def _extract_attachments_from_email(self, message_id: str, payload: Dict, sender: str, config: dict, base_folder_id: str, existing_files_in_folder: set = None) -> int:
         """Extract attachments from email with proper folder structure"""
         processed_count = 0
         
@@ -314,6 +314,14 @@ class ZeptoAutomation:
             if config.get('attachment_filter'):
                 if filename.lower() != config['attachment_filter'].lower():
                     return 0
+
+            # Upload file with message ID prefix
+            prefixed_filename = f"{message_id}_{filename}"
+
+            # Check duplicate before upload
+            if existing_files_in_folder and prefixed_filename in existing_files_in_folder:
+                st.info(f"⏭️ Skipped {prefixed_filename}: already exists in Drive folder")
+                return 0
             
             try:
                 # Get attachment data
@@ -328,9 +336,12 @@ class ZeptoAutomation:
                 sender_folder_id = self._create_drive_folder("procurement@zeptonow.com", base_folder_id)
                 grn_folder_id = self._create_drive_folder("grn", sender_folder_id)
                 pdfs_folder_id = self._create_drive_folder("PDFs", grn_folder_id)
+        existing_files_in_folder = self._list_drive_files_simple(pdfs_folder_id)
+        st.info(f"Found {len(existing_files_in_folder)} existing files in Drive folder")
                 
                 # Upload file with message ID prefix
-                prefixed_filename = f"{message_id}_{filename}"
+            try:
+                # Get attachment data
                 
                 file_metadata = {
                     'name': prefixed_filename,
@@ -404,6 +415,17 @@ class ZeptoAutomation:
                 existing_ids = self.get_existing_drive_ids(config['spreadsheet_id'], config['sheet_range'])
                 pdf_files = [f for f in pdf_files if f['id'] not in existing_ids]
                 st.info(f"After filtering existing, {len(pdf_files)} PDFs to process")
+
+        # Additional filtering based on source_file names
+        existing_source_files = self.get_existing_source_file_names(config['spreadsheet_id'], config['sheet_range'])
+        pdf_files_to_process = [file for file in pdf_files if file['name'] not in existing_source_files]
+        skipped_files = [file['name'] for file in pdf_files if file['name'] in existing_source_files]
+        
+        if skipped_files:
+            st.info(f"⏭️ Skipped {len(skipped_files)} files (already processed): {', '.join(skipped_files[:5])}" + 
+                   (f" and {len(skipped_files)-5} more..." if len(skipped_files) > 5 else ""))
+        
+        pdf_files = pdf_files_to_process
             
             if max_files is not None:
                 pdf_files = pdf_files[:max_files]
@@ -502,6 +524,50 @@ class ZeptoAutomation:
             st.error(f"Failed to get existing file IDs: {str(e)}")
             return set()
     
+
+    def get_existing_source_file_names(self, spreadsheet_id: str, sheet_range: str) -> set:
+        """Get set of existing source_file names from Google Sheet"""
+        try:
+            result = self.sheets_service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=sheet_range,
+                majorDimension="ROWS"
+            ).execute()
+            values = result.get('values', [])
+            if not values:
+                return set()
+            headers = values[0]
+            if "source_file" not in headers:
+                return set()
+            idx = headers.index("source_file")
+            return {row[idx] for row in values[1:] if len(row) > idx and row[idx]}
+        except Exception as e:
+            st.error(f"Failed to get source file names: {str(e)}")
+            return set()
+
+
+    def _list_drive_files_simple(self, folder_id: str) -> set:
+        """List file names in Drive folder for duplicate checking"""
+        try:
+            query = f"'{folder_id}' in parents and trashed=false"
+            files = []
+            page_token = None
+            while True:
+                results = self.drive_service.files().list(
+                    q=query,
+                    fields="nextPageToken, files(name)",
+                    pageToken=page_token
+                ).execute()
+                files.extend(results.get('files', []))
+                page_token = results.get('nextPageToken')
+                if not page_token:
+                    break
+            return set(f['name'] for f in files)
+        except Exception as e:
+            st.error(f"Failed to list Drive files for duplicates: {str(e)}")
+            return set()
+
+
     def _list_drive_files(self, folder_id: str, days_back: int = 7) -> List[Dict]:
         """List PDF files in Drive folder"""
         try:

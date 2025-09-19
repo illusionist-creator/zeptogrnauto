@@ -1134,7 +1134,7 @@ def render_database_dashboard():
                 st.info("No records found in database")
 
 def main():
-    st.title("⚡ Zepto Automation Dashboard")
+    st.title("⛵ Zepto Automation Dashboard")
     st.markdown("Automate Gmail attachment downloads and PDF processing workflows with dual storage support")
     
     # Initialize session state for configuration

@@ -218,42 +218,43 @@ class DatabaseManager:
             st.error(f"Failed to create table: {str(e)}")
 
     def _normalize_column_names(self, record: Dict[str, Any]) -> Dict[str, Any]:
-    
-    # Column name mapping from your sheets format to database format
-    column_mapping = {
-        'Taxable value.': 'taxable_value',
-        'Total amount': 'total_amount',
-        'Unit price in INR.': 'unit_price_inr',
-        'Expected quantity.': 'expected_quantity',
-        'Received quantity.': 'received_quantity',
-        'MRP': 'mrp',
-        'sku': 'sku',
-        # Keep existing mappings
-        'po_number': 'po_number',
-        'vendor_invoice_number': 'vendor_invoice_number',
-        'supplier': 'supplier',
-        'shipping_address': 'shipping_address',
-        'grn_date': 'grn_date',
-        'source_file': 'source_file',
-        'processed_date': 'processed_date',
-        'drive_file_id': 'drive_file_id',
-        'item_name': 'item_name',
-        'item_description': 'item_description',
-        'quantity': 'quantity',
-        'unit_price': 'unit_price',
-        'unit': 'unit',
-        'batch_number': 'batch_number',
-        'expiry_date': 'expiry_date',
-        'raw_data': 'raw_data'
-    }
-    
-    normalized_record = {}
-    for original_key, value in record.items():
-        # Use mapped name or keep original if no mapping exists
-        db_key = column_mapping.get(original_key, original_key)
-        normalized_record[db_key] = value
-    
-    return normalized_record
+        """Normalize column names to match database schema"""
+        
+        # Column name mapping from your sheets format to database format
+        column_mapping = {
+            'Taxable value.': 'taxable_value',
+            'Total amount': 'total_amount',
+            'Unit price in INR.': 'unit_price_inr',
+            'Expected quantity.': 'expected_quantity',
+            'Received quantity.': 'received_quantity',
+            'MRP': 'mrp',
+            'sku': 'sku',
+            # Keep existing mappings
+            'po_number': 'po_number',
+            'vendor_invoice_number': 'vendor_invoice_number',
+            'supplier': 'supplier',
+            'shipping_address': 'shipping_address',
+            'grn_date': 'grn_date',
+            'source_file': 'source_file',
+            'processed_date': 'processed_date',
+            'drive_file_id': 'drive_file_id',
+            'item_name': 'item_name',
+            'item_description': 'item_description',
+            'quantity': 'quantity',
+            'unit_price': 'unit_price',
+            'unit': 'unit',
+            'batch_number': 'batch_number',
+            'expiry_date': 'expiry_date',
+            'raw_data': 'raw_data'
+        }
+        
+        normalized_record = {}
+        for original_key, value in record.items():
+            # Use mapped name or keep original if no mapping exists
+            db_key = column_mapping.get(original_key, original_key)
+            normalized_record[db_key] = value
+        
+        return normalized_record
     
     def insert_records(self, records: List[Dict[str, Any]]) -> bool:
         """Insert multiple records into the database with proper column name handling"""

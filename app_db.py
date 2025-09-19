@@ -106,7 +106,34 @@ class DatabaseManager:
         except Exception as e:
             st.error(f"Database connection failed: {str(e)}")
             return False
+    def drop_and_recreate_table(self):
+        """Drop existing table and recreate with new schema"""
+        try:
+            cursor = self.connection.cursor()
+            
+            # Drop existing table
+            cursor.execute(f"DROP TABLE IF EXISTS {self.table_name}")
+            st.warning(f"Dropped existing table: {self.table_name}")
+            
+            # Create new table with updated schema
+            self._create_table()
+            
+            cursor.close()
+            self.connection.commit()
+            st.success("Table recreated with new schema!")
+            return True
+            
+        except Exception as e:
+            st.error(f"Failed to recreate table: {str(e)}")
+            return False
     
+    def reset_database(self):
+        """Complete database reset - use with caution"""
+        if st.button("⚠️ Reset Database (This will delete all data)", type="secondary"):
+            if st.checkbox("I understand this will delete all existing data"):
+                return self.drop_and_recreate_table()
+        return False
+        
     def _create_table(self):
         """Create the main data table if it doesn't exist - updated to match your actual data structure"""
         try:

@@ -108,7 +108,7 @@ class DatabaseManager:
             return False
     
     def _create_table(self):
-        """Create the main data table if it doesn't exist"""
+        """Create the main data table if it doesn't exist - updated to match your actual data structure"""
         try:
             cursor = self.connection.cursor()
             
@@ -116,19 +116,25 @@ class DatabaseManager:
                 create_table_sql = f"""
                 CREATE TABLE IF NOT EXISTS {self.table_name} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    taxable_value REAL,
+                    total_amount REAL,
+                    processed_date TEXT,
+                    unit_price_inr REAL,
                     po_number TEXT,
+                    drive_file_id TEXT,
+                    grn_date TEXT,
+                    sku TEXT,
+                    source_file TEXT NOT NULL,
                     vendor_invoice_number TEXT,
+                    mrp REAL,
+                    expected_quantity REAL,
+                    received_quantity REAL,
                     supplier TEXT,
                     shipping_address TEXT,
-                    grn_date TEXT,
-                    source_file TEXT NOT NULL,
-                    processed_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    drive_file_id TEXT,
                     item_name TEXT,
                     item_description TEXT,
                     quantity REAL,
                     unit_price REAL,
-                    total_amount REAL,
                     unit TEXT,
                     batch_number TEXT,
                     expiry_date TEXT,
@@ -142,19 +148,25 @@ class DatabaseManager:
                 create_table_sql = f"""
                 CREATE TABLE IF NOT EXISTS {self.table_name} (
                     id SERIAL PRIMARY KEY,
+                    taxable_value DECIMAL(10,2),
+                    total_amount DECIMAL(10,2),
+                    processed_date VARCHAR(50),
+                    unit_price_inr DECIMAL(10,2),
                     po_number VARCHAR(255),
+                    drive_file_id VARCHAR(255),
+                    grn_date VARCHAR(50),
+                    sku VARCHAR(500),
+                    source_file VARCHAR(500) NOT NULL,
                     vendor_invoice_number VARCHAR(255),
+                    mrp DECIMAL(10,2),
+                    expected_quantity DECIMAL(10,2),
+                    received_quantity DECIMAL(10,2),
                     supplier VARCHAR(255),
                     shipping_address TEXT,
-                    grn_date VARCHAR(50),
-                    source_file VARCHAR(500) NOT NULL,
-                    processed_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    drive_file_id VARCHAR(255),
                     item_name VARCHAR(500),
                     item_description TEXT,
                     quantity DECIMAL(10,2),
                     unit_price DECIMAL(10,2),
-                    total_amount DECIMAL(10,2),
                     unit VARCHAR(50),
                     batch_number VARCHAR(255),
                     expiry_date VARCHAR(50),
@@ -168,19 +180,25 @@ class DatabaseManager:
                 create_table_sql = f"""
                 CREATE TABLE IF NOT EXISTS {self.table_name} (
                     id INT AUTO_INCREMENT PRIMARY KEY,
+                    taxable_value DECIMAL(10,2),
+                    total_amount DECIMAL(10,2),
+                    processed_date VARCHAR(50),
+                    unit_price_inr DECIMAL(10,2),
                     po_number VARCHAR(255),
+                    drive_file_id VARCHAR(255),
+                    grn_date VARCHAR(50),
+                    sku VARCHAR(500),
+                    source_file VARCHAR(500) NOT NULL,
                     vendor_invoice_number VARCHAR(255),
+                    mrp DECIMAL(10,2),
+                    expected_quantity DECIMAL(10,2),
+                    received_quantity DECIMAL(10,2),
                     supplier VARCHAR(255),
                     shipping_address TEXT,
-                    grn_date VARCHAR(50),
-                    source_file VARCHAR(500) NOT NULL,
-                    processed_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    drive_file_id VARCHAR(255),
                     item_name VARCHAR(500),
                     item_description TEXT,
                     quantity DECIMAL(10,2),
                     unit_price DECIMAL(10,2),
-                    total_amount DECIMAL(10,2),
                     unit VARCHAR(50),
                     batch_number VARCHAR(255),
                     expiry_date VARCHAR(50),
@@ -198,58 +216,109 @@ class DatabaseManager:
             
         except Exception as e:
             st.error(f"Failed to create table: {str(e)}")
+
+    def _normalize_column_names(self, record: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize column names to match database schema"""
+    
+    # Column name mapping from your sheets format to database format
+    column_mapping = {
+        'Taxable value.': 'taxable_value',
+        'Total amount': 'total_amount',
+        'Unit price in INR.': 'unit_price_inr',
+        'Expected quantity.': 'expected_quantity',
+        'Received quantity.': 'received_quantity',
+        'MRP': 'mrp',
+        'sku': 'sku',
+        # Keep existing mappings
+        'po_number': 'po_number',
+        'vendor_invoice_number': 'vendor_invoice_number',
+        'supplier': 'supplier',
+        'shipping_address': 'shipping_address',
+        'grn_date': 'grn_date',
+        'source_file': 'source_file',
+        'processed_date': 'processed_date',
+        'drive_file_id': 'drive_file_id',
+        'item_name': 'item_name',
+        'item_description': 'item_description',
+        'quantity': 'quantity',
+        'unit_price': 'unit_price',
+        'unit': 'unit',
+        'batch_number': 'batch_number',
+        'expiry_date': 'expiry_date',
+        'raw_data': 'raw_data'
+    }
+    
+    normalized_record = {}
+    for original_key, value in record.items():
+        # Use mapped name or keep original if no mapping exists
+        db_key = column_mapping.get(original_key, original_key)
+        normalized_record[db_key] = value
+    
+    return normalized_record
     
     def insert_records(self, records: List[Dict[str, Any]]) -> bool:
-        """Insert multiple records into the database"""
+        """Insert multiple records into the database with proper column name handling"""
         if not self.connection or not records:
             return False
             
         try:
             cursor = self.connection.cursor()
             
-            # Get all unique columns from all records
+            # Normalize all records first
+            normalized_records = [self._normalize_column_names(record) for record in records]
+            
+            # Get all unique columns from normalized records
             all_columns = set()
-            for record in records:
+            for record in normalized_records:
                 all_columns.update(record.keys())
             
             # Remove id if present (auto-generated)
             all_columns.discard('id')
-            columns = list(all_columns)
+            columns = sorted(list(all_columns))  # Sort for consistency
             
-            # Prepare INSERT statement
+            # Prepare INSERT statement with quoted column names for safety
             if self.db_type == 'sqlite':
+                quoted_columns = [f'"{col}"' for col in columns]
                 placeholders = ', '.join(['?' for _ in columns])
-                insert_sql = f"""
-                INSERT INTO {self.table_name} ({', '.join(columns)}) 
-                VALUES ({placeholders})
-                """
-                
             else:  # PostgreSQL and MySQL
+                quoted_columns = [f'"{col}"' for col in columns]
                 placeholders = ', '.join(['%s' for _ in columns])
-                insert_sql = f"""
-                INSERT INTO {self.table_name} ({', '.join(columns)}) 
-                VALUES ({placeholders})
-                """
+                
+            insert_sql = f"""
+            INSERT INTO {self.table_name} ({', '.join(quoted_columns)}) 
+            VALUES ({placeholders})
+            """
             
             # Prepare data for batch insert
             batch_data = []
-            for record in records:
-                # Convert raw_data to JSON string for sqlite, keep as dict for others
-                record_data = record.copy()
-                if 'raw_data' in record_data and isinstance(record_data['raw_data'], dict):
+            for record in normalized_records:
+                # Convert raw_data to JSON string for sqlite
+                if 'raw_data' in record and isinstance(record['raw_data'], dict):
                     if self.db_type == 'sqlite':
-                        record_data['raw_data'] = json.dumps(record_data['raw_data'])
+                        record['raw_data'] = json.dumps(record['raw_data'])
+                
+                # Ensure numeric fields are properly converted
+                numeric_fields = ['taxable_value', 'total_amount', 'unit_price_inr', 'mrp', 
+                                'expected_quantity', 'received_quantity', 'quantity', 'unit_price']
+                for field in numeric_fields:
+                    if field in record and record[field] is not None:
+                        try:
+                            if record[field] != "":
+                                record[field] = float(record[field])
+                            else:
+                                record[field] = None
+                        except (ValueError, TypeError):
+                            record[field] = None
                 
                 # Create row with all columns, filling missing ones with None
-                row = [record_data.get(col) for col in columns]
+                row = [record.get(col) for col in columns]
                 batch_data.append(row)
             
-            # Execute batch insert
-            if self.db_type == 'sqlite':
-                cursor.executemany(insert_sql, batch_data)
-            else:
-                cursor.executemany(insert_sql, batch_data)
+            # Debug info
+            st.info(f"Inserting {len(batch_data)} records with columns: {columns[:5]}..." if len(columns) > 5 else f"Inserting {len(batch_data)} records with columns: {columns}")
             
+            # Execute batch insert
+            cursor.executemany(insert_sql, batch_data)
             self.connection.commit()
             cursor.close()
             
@@ -258,6 +327,7 @@ class DatabaseManager:
             
         except Exception as e:
             st.error(f"Failed to insert records into database: {str(e)}")
+            st.error(f"SQL: {insert_sql[:200]}..." if 'insert_sql' in locals() else "SQL not generated")
             if self.connection:
                 self.connection.rollback()
             return False
@@ -899,38 +969,47 @@ class ZeptoAutomation:
                     raise e
     
     def _process_extracted_data(self, extracted_data: Dict, file_info: Dict) -> List[Dict]:
-        """Process extracted data into rows"""
+        """Process extracted data into rows - updated to handle your actual data structure"""
         rows = []
         items = []
         
         if "items" in extracted_data:
             items = extracted_data["items"]
-            for item in items:
-                item["po_number"] = self._get_value(extracted_data, ["purchase_order_number", "po_number", "PO No"])
-                item["vendor_invoice_number"] = self._get_value(extracted_data, ["supplier_bill_number", "vendor_invoice_number", "invoice_number"])
-                item["supplier"] = self._get_value(extracted_data, ["supplier", "vendor", "Supplier Name"])
-                item["shipping_address"] = self._get_value(extracted_data, ["Shipping Address", "receiver_address", "shipping_address"])
-                item["grn_date"] = self._get_value(extracted_data, ["delivered_on", "grn_date"])
-                item["source_file"] = file_info['name']
-                item["processed_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                item["drive_file_id"] = file_info['id']
         elif "product_items" in extracted_data:
             items = extracted_data["product_items"]
-            for item in items:
-                item["po_number"] = self._get_value(extracted_data, ["purchase_order_number", "po_number", "PO No"])
-                item["vendor_invoice_number"] = self._get_value(extracted_data, ["supplier_bill_number", "vendor_invoice_number", "invoice_number"])
-                item["supplier"] = self._get_value(extracted_data, ["supplier", "vendor", "Supplier Name"])
-                item["shipping_address"] = self._get_value(extracted_data, ["Shipping Address", "receiver_address", "shipping_address"])
-                item["grn_date"] = self._get_value(extracted_data, ["delivered_on", "grn_date"])
-                item["source_file"] = file_info['name']
-                item["processed_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                item["drive_file_id"] = file_info['id']
         else:
             st.warning(f"Skipping (no recognizable items key): {file_info['name']}")
             return rows
         
-        # Clean items and add to rows
         for item in items:
+            # Add common fields
+            item["po_number"] = self._get_value(extracted_data, ["purchase_order_number", "po_number", "PO No"])
+            item["vendor_invoice_number"] = self._get_value(extracted_data, ["supplier_bill_number", "vendor_invoice_number", "invoice_number"])
+            item["supplier"] = self._get_value(extracted_data, ["supplier", "vendor", "Supplier Name"])
+            item["shipping_address"] = self._get_value(extracted_data, ["Shipping Address", "receiver_address", "shipping_address"])
+            item["grn_date"] = self._get_value(extracted_data, ["delivered_on", "grn_date"])
+            item["source_file"] = file_info['name']
+            item["processed_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            item["drive_file_id"] = file_info['id']
+            
+            # Handle column name mapping for your specific fields
+            # Map common variations to your expected column names
+            field_mappings = {
+                'taxable_value': ['Taxable value.', 'taxable_value', 'taxable_amount'],
+                'total_amount': ['Total amount', 'total_amount', 'amount', 'total'],
+                'unit_price_inr': ['Unit price in INR.', 'unit_price_inr', 'unit_price', 'price'],
+                'expected_quantity': ['Expected quantity.', 'expected_quantity', 'expected_qty'],
+                'received_quantity': ['Received quantity.', 'received_quantity', 'received_qty', 'quantity'],
+                'mrp': ['MRP', 'mrp', 'maximum_retail_price'],
+                'sku': ['sku', 'SKU', 'product_code', 'item_code']
+            }
+            
+            for db_field, possible_keys in field_mappings.items():
+                value = self._get_value(item, possible_keys, None)
+                if value is not None:
+                    item[db_field] = value
+            
+            # Clean the item - remove empty values and add to rows
             cleaned_item = {k: v for k, v in item.items() if v not in ["", None]}
             rows.append(cleaned_item)
         

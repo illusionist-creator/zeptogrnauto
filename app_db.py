@@ -218,7 +218,6 @@ class DatabaseManager:
             st.error(f"Failed to create table: {str(e)}")
 
     def _normalize_column_names(self, record: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize column names to match database schema"""
     
     # Column name mapping from your sheets format to database format
     column_mapping = {
